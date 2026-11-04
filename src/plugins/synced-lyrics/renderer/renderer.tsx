@@ -17,6 +17,7 @@ import {
   PlainLyrics,
 } from './components';
 import { LyricsPicker } from './components/LyricsPicker';
+import { _ytAPI } from './index';
 import { reactiveOwner } from './reactive-root';
 import { currentLyrics } from './store';
 import { selectors } from './utils';
@@ -39,10 +40,7 @@ runWithOwner(reactiveOwner, () => {
         root.style.setProperty('--lyrics-line-height', '1.333');
         root.style.setProperty('--lyrics-width', '100%');
         root.style.setProperty('--lyrics-padding', '2rem');
-        root.style.setProperty(
-          '--lyrics-animations',
-          'lyrics-glow var(--lyrics-glow-duration) forwards, lyrics-wobble var(--lyrics-wobble-duration) forwards',
-        );
+        root.style.setProperty('--lyrics-animation-names', 'lyrics-glow');
 
         root.style.setProperty('--lyrics-inactive-font-weight', '700');
         root.style.setProperty('--lyrics-inactive-opacity', '0.33');
@@ -65,7 +63,7 @@ runWithOwner(reactiveOwner, () => {
         );
         root.style.setProperty('--lyrics-width', '83%');
         root.style.setProperty('--lyrics-padding', '0');
-        root.style.setProperty('--lyrics-animations', 'none');
+        root.style.setProperty('--lyrics-animation-names', 'none');
 
         root.style.setProperty('--lyrics-inactive-font-weight', '400');
         root.style.setProperty('--lyrics-inactive-opacity', '0.33');
@@ -88,7 +86,7 @@ runWithOwner(reactiveOwner, () => {
         );
         root.style.setProperty('--lyrics-width', '100%');
         root.style.setProperty('--lyrics-padding', '0');
-        root.style.setProperty('--lyrics-animations', 'none');
+        root.style.setProperty('--lyrics-animation-names', 'none');
 
         root.style.setProperty('--lyrics-inactive-font-weight', '400');
         root.style.setProperty('--lyrics-inactive-opacity', '0.33');
@@ -111,7 +109,7 @@ runWithOwner(reactiveOwner, () => {
         );
         root.style.setProperty('--lyrics-width', '100%');
         root.style.setProperty('--lyrics-padding', '0');
-        root.style.setProperty('--lyrics-animations', 'none');
+        root.style.setProperty('--lyrics-animation-names', 'none');
 
         root.style.setProperty('--lyrics-inactive-font-weight', '400');
         root.style.setProperty('--lyrics-inactive-opacity', '0.33');
@@ -144,6 +142,9 @@ type LyricsRendererChild =
 const lyricsPicker: LyricsRendererChild = { kind: 'LyricsPicker' };
 
 export const [currentTime, setCurrentTime] = createSignal<number>(-1);
+export const [isPlaying, setIsPlaying] = createSignal<boolean>(false);
+/** Incremented every time the playback position jumps (seek, song change). */
+export const [seekCount, setSeekCount] = createSignal<number>(0);
 export const LyricsRenderer = () => {
   const [scroller, setScroller] = createSignal<VirtualizerHandle>();
   const [stickyRef, setStickRef] = createSignal<HTMLElement | null>(null);
@@ -270,6 +271,36 @@ export const LyricsRenderer = () => {
     const scrollIndex = Math.min(idx + 1, maxIdx);
 
     scroller()!.scrollToIndex(scrollIndex, {
+      smooth: true,
+      align: 'center',
+    });
+  });
+
+  // Plain (unsynced) lyrics: scroll proportionally to the song progress.
+  const [plainIndex, setPlainIndex] = createSignal(-1);
+  createEffect(() => {
+    const data = currentLyrics()?.data;
+    if (!data || data.lines || !data.lyrics) return setPlainIndex(-1);
+
+    // Same filtering as the children above, so indices line up.
+    const lineCount = data.lyrics
+      .split('\n')
+      .filter((line) => line.trim()).length;
+    const durationMs = (_ytAPI?.getDuration() ?? 0) * 1000;
+    if (!lineCount || durationMs <= 0) return setPlainIndex(-1);
+
+    const progress = Math.min(1, Math.max(0, currentTime() / durationMs));
+    return setPlainIndex(
+      Math.min(lineCount - 1, Math.floor(progress * lineCount)),
+    );
+  });
+
+  createEffect(() => {
+    const idx = plainIndex();
+    if (idx < 0 || !scroller()) return;
+
+    // +1 to account for the lyrics picker at index 0
+    scroller()!.scrollToIndex(idx + 1, {
       smooth: true,
       align: 'center',
     });

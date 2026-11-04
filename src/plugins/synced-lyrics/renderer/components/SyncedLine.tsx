@@ -1,16 +1,96 @@
-import { createEffect, For, Show, createSignal, createMemo } from 'solid-js';
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Show,
+  untrack,
+} from 'solid-js';
 import { type VirtualizerHandle } from 'virtua/solid';
 
 import { type LineLyrics } from '@/plugins/synced-lyrics/types';
 
 import { _ytAPI } from '..';
-import { config, currentTime } from '../renderer';
+import { config, currentTime, isPlaying, seekCount } from '../renderer';
 import {
   canonicalize,
   convertChineseCharacter,
   romanize,
   simplifyUnicode,
 } from '../utils';
+
+// How long before the next lyric line the current one should be fully "sung".
+const LINE_END_GAP_MS = 100;
+// Used when the line duration is unknown (e.g. the last line of an LRC file).
+const FALLBACK_DURATION_MS = 5000;
+
+/**
+ * Lyrics providers only tell us when a line starts, not when each word is sung.
+ * We assume the line is sung between its start time `t_s` and the start of the
+ * next line `t_e` (minus a small gap), and spread the words over that window,
+ * weighted by their length, since longer words take longer to sing.
+ *
+ * `elapsed` is how far into the line playback was when the animation (re)started,
+ * so the delays can be negative when we join a line midway (e.g. after a seek).
+ */
+const wordTimingStyles = (
+  words: string[],
+  line: LineLyrics,
+  elapsed: number,
+) => {
+  let duration = line.duration;
+  if (!Number.isFinite(duration) || duration <= 0) {
+    const songEnd = (_ytAPI?.getDuration() ?? 0) * 1000;
+    const remaining = songEnd - line.timeInMs;
+    duration =
+      remaining > 0
+        ? Math.min(remaining, FALLBACK_DURATION_MS)
+        : FALLBACK_DURATION_MS;
+  }
+
+  const singing = Math.max(
+    duration * 0.5,
+    duration - Math.min(LINE_END_GAP_MS, duration * 0.05),
+  );
+
+  const weights = words.map((word) => Math.max(1, Array.from(word).length));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+
+  let start = 0;
+  return weights.map((weight) => {
+    const wordDuration = (singing * weight) / totalWeight;
+    const style = {
+      '--lyrics-word-delay': `${start - elapsed}ms`,
+      '--lyrics-word-duration': `${wordDuration}ms`,
+    };
+    start += wordDuration;
+    return style;
+  });
+};
+
+const AnimatedWords = (props: {
+  text: string;
+  line: LineLyrics;
+  elapsed: number;
+  class?: string;
+}) => {
+  const words = createMemo(() => props.text.split(' '));
+  const styles = createMemo(() =>
+    wordTimingStyles(words(), props.line, props.elapsed),
+  );
+
+  return (
+    <span class={props.class}>
+      <For each={words()}>
+        {(word, index) => (
+          <span style={styles()[index()]}>
+            <yt-formatted-string text={{ runs: [{ text: `${word} ` }] }} />
+          </span>
+        )}
+      </For>
+    </span>
+  );
+};
 
 interface SyncedLineProps {
   scroller: VirtualizerHandle;
@@ -103,10 +183,21 @@ export const SyncedLine = (props: SyncedLineProps) => {
     });
   });
 
+  // A new object every time the line becomes current or the user seeks,
+  // which re-mounts the words below and thus restarts their animations,
+  // aligned with the actual playback position.
+  const sync = createMemo(() => {
+    seekCount();
+    const status = props.status;
+    const elapsed =
+      status === 'current' ? untrack(currentTime) - props.line.timeInMs : 0;
+    return { status, elapsed };
+  });
+
   return (
     <Show fallback={<EmptyLine {...props} />} when={text()}>
       <div
-        class={`synced-line ${props.status}`}
+        class={`synced-line ${props.status}${isPlaying() ? '' : ' paused'}`}
         onClick={() => {
           _ytAPI?.seekTo((props.line.timeInMs + 10) / 1000);
         }}
@@ -124,63 +215,33 @@ export const SyncedLine = (props: SyncedLineProps) => {
 
           <div
             class="text-lyrics"
-            ref={(div: HTMLDivElement) => {
-              // TODO: Investigate the animation, even though the duration is properly set, all lines have the same animation duration
-              div.style.setProperty(
-                '--lyrics-duration',
-                `${props.line.duration / 1000}s`,
-                'important',
-              );
-            }}
             style={{ 'display': 'flex', 'flex-direction': 'column' }}
           >
-            <span>
-              <For each={text().split(' ')}>
-                {(word, index) => {
-                  return (
-                    <span
-                      style={{
-                        'transition-delay': `${index() * 0.05}s`,
-                        'animation-delay': `${index() * 0.05}s`,
-                      }}
-                    >
-                      <yt-formatted-string
-                        text={{
-                          runs: [{ text: `${word} ` }],
-                        }}
-                      />
-                    </span>
-                  );
-                }}
-              </For>
-            </span>
+            <Show keyed when={sync()}>
+              {({ elapsed }) => (
+                <>
+                  <AnimatedWords
+                    elapsed={elapsed}
+                    line={props.line}
+                    text={text()}
+                  />
 
-            <Show
-              when={
-                config()?.romanization &&
-                simplifyUnicode(text()) !== simplifyUnicode(romanization())
-              }
-            >
-              <span class="romaji">
-                <For each={romanization().split(' ')}>
-                  {(word, index) => {
-                    return (
-                      <span
-                        style={{
-                          'transition-delay': `${index() * 0.05}s`,
-                          'animation-delay': `${index() * 0.05}s`,
-                        }}
-                      >
-                        <yt-formatted-string
-                          text={{
-                            runs: [{ text: `${word} ` }],
-                          }}
-                        />
-                      </span>
-                    );
-                  }}
-                </For>
-              </span>
+                  <Show
+                    when={
+                      config()?.romanization &&
+                      simplifyUnicode(text()) !==
+                        simplifyUnicode(romanization())
+                    }
+                  >
+                    <AnimatedWords
+                      class="romaji"
+                      elapsed={elapsed}
+                      line={props.line}
+                      text={romanization()}
+                    />
+                  </Show>
+                </>
+              )}
             </Show>
           </div>
         </div>

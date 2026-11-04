@@ -1,4 +1,4 @@
-import { createMemo, runWithOwner } from 'solid-js';
+import { createMemo, createSignal, runWithOwner } from 'solid-js';
 import { createStore } from 'solid-js/store';
 
 import { getSongInfo } from '@/providers/song-info-front';
@@ -44,6 +44,36 @@ export const currentLyrics = runWithOwner(reactiveOwner, () =>
     return lyricsStore.lyrics[provider];
   }),
 )!;
+
+/** Providers which are not disabled in the plugin config, in display order. */
+export const [enabledProviders, setEnabledProviders] = createSignal<
+  ProviderName[]
+>([...providerNames]);
+
+export const isProviderEnabled = (provider: ProviderName) =>
+  enabledProviders().includes(provider);
+
+export const updateEnabledProviders = (disabled: ProviderName[] = []) => {
+  const previous = enabledProviders();
+  const next = providerNames.filter((name) => !disabled.includes(name));
+
+  if (
+    previous.length === next.length &&
+    previous.every((name, idx) => name === next[idx])
+  ) {
+    return;
+  }
+
+  setEnabledProviders(next);
+
+  // Fetch the lyrics of re-enabled providers for the current song,
+  // since they were skipped while the provider was disabled.
+  const info = getSongInfo();
+  if (!info?.videoId) return;
+  for (const provider of next) {
+    if (!previous.includes(provider)) retrySearch(provider, info);
+  }
+};
 
 type VideoId = string;
 
@@ -100,6 +130,11 @@ export const fetchLyrics = (info: SongInfo) => {
     ) {
     const pCache = cache.data[providerName];
 
+    if (!isProviderEnabled(providerName)) {
+      pCache.state = 'done';
+      continue;
+    }
+
     tasks.push(
       provider
         .search(info)
@@ -145,6 +180,12 @@ export const fetchLyrics = (info: SongInfo) => {
 };
 
 export const retrySearch = (provider: ProviderName, info: SongInfo) => {
+  const isCurrentSong = () => getSongInfo().videoId === info.videoId;
+  const updateCache = (state: ProviderState) => {
+    const cache = searchCache.get(info.videoId);
+    if (cache) cache.data[provider] = state;
+  };
+
   setLyricsStore('lyrics', (old) => {
     const pCache = {
       state: 'fetching',
@@ -161,6 +202,9 @@ export const retrySearch = (provider: ProviderName, info: SongInfo) => {
   providers[provider]
     .search(info)
     .then((res) => {
+      updateCache({ state: 'done', data: res, error: null });
+      if (!isCurrentSong()) return;
+
       setLyricsStore('lyrics', (old) => {
         return {
           ...old,
@@ -168,7 +212,10 @@ export const retrySearch = (provider: ProviderName, info: SongInfo) => {
         };
       });
     })
-    .catch((error) => {
+    .catch((error: Error) => {
+      updateCache({ state: 'error', data: null, error });
+      if (!isCurrentSong()) return;
+
       setLyricsStore('lyrics', (old) => {
         return {
           ...old,

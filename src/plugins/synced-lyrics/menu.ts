@@ -42,6 +42,26 @@ export const menu = async (
       ],
     },
     {
+      label: t('plugins.synced-lyrics.menu.enabled-providers.label'),
+      toolTip: t('plugins.synced-lyrics.menu.enabled-providers.tooltip'),
+      type: 'submenu',
+      submenu: providerNames.map(
+        (provider) =>
+          ({
+            label: provider,
+            type: 'checkbox',
+            checked: !config.disabledProviders?.includes(provider),
+            click(item) {
+              const disabled = new Set(config.disabledProviders ?? []);
+              if (item.checked) disabled.delete(provider);
+              else disabled.add(provider);
+
+              ctx.setConfig({ disabledProviders: Array.from(disabled) });
+            },
+          }) as const,
+      ),
+    },
+    {
       label: t('plugins.synced-lyrics.menu.precise-timing.label'),
       toolTip: t('plugins.synced-lyrics.menu.precise-timing.tooltip'),
       type: 'checkbox',

@@ -78,7 +78,7 @@ export class YTMusic implements LyricProvider {
 
     if (synced?.length && synced[0].timeInMs > 300) {
       synced.unshift({
-        duration: 0,
+        duration: synced[0].timeInMs,
         text: '',
         time: '00:00.00',
         timeInMs: 0,

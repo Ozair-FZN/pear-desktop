@@ -4,6 +4,7 @@ import type { SongInfo } from '@/providers/song-info';
 export type SyncedLyricsPluginConfig = {
   enabled: boolean;
   preferredProvider?: ProviderName;
+  disabledProviders: ProviderName[];
   preciseTiming: boolean;
   showTimeCodes: boolean;
   defaultTextString: string | string[];

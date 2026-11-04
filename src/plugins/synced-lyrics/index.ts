@@ -21,6 +21,7 @@ export default createPlugin<
   addedVersion: '3.5.X',
   config: {
     enabled: false,
+    disabledProviders: [],
     preciseTiming: true,
     showLyricsEvenIfInexact: true,
     showTimeCodes: false,

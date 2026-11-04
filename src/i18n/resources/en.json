@@ -842,6 +842,10 @@
         "not-found": "⚠️ No lyrics found for this song."
       },
       "menu": {
+        "enabled-providers": {
+          "label": "Enabled Providers",
+          "tooltip": "Choose which providers are used to search for lyrics"
+        },
         "preferred-provider": {
           "label": "Preferred Provider",
           "tooltip": "Choose the default provider to use",

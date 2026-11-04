@@ -1,15 +1,25 @@
+import { batch } from 'solid-js';
+
 import { createRenderer } from '@/utils';
 import { waitForElement } from '@/utils/wait-for-element';
 
 import { disposeReactiveRoot } from './reactive-root';
-import { setConfig, setCurrentTime } from './renderer';
-import { fetchLyrics } from './store';
+import {
+  setConfig,
+  setCurrentTime,
+  setIsPlaying,
+  setSeekCount,
+} from './renderer';
+import { fetchLyrics, updateEnabledProviders } from './store';
 import { selectors, tabStates } from './utils';
 
 import type { SyncedLyricsPluginConfig } from '../types';
 import type { SongInfo } from '@/providers/song-info';
 import type { RendererContext } from '@/types/contexts';
 import type { MusicPlayer } from '@/types/music-player';
+
+const PLAYER_STATE_PLAYING = 1;
+const SEEK_THRESHOLD_MS = 500;
 
 export let _ytAPI: MusicPlayer | null = null;
 export let netFetch: (
@@ -27,6 +37,7 @@ export const renderer = createRenderer<
   SyncedLyricsPluginConfig
 >({
   onConfigChange(newConfig) {
+    updateEnabledProviders(newConfig.disabledProviders);
     setConfig(newConfig);
   },
 
@@ -54,10 +65,26 @@ export const renderer = createRenderer<
   },
   async videoDataChange() {
     if (!this.updateTimestampInterval) {
-      this.updateTimestampInterval = setInterval(
-        () => setCurrentTime((_ytAPI?.getCurrentTime() ?? 0) * 1000),
-        100,
-      );
+      // Used to detect jumps in the playback position (seeks, song changes),
+      // so the word animations can be re-aligned.
+      let last = { time: -1, at: performance.now(), playing: false };
+
+      this.updateTimestampInterval = setInterval(() => {
+        const time = (_ytAPI?.getCurrentTime() ?? 0) * 1000;
+        const at = performance.now();
+        const playing = _ytAPI?.getPlayerState() === PLAYER_STATE_PLAYING;
+        const rate = _ytAPI?.getPlaybackRate() ?? 1;
+
+        const expected = last.time + (last.playing ? (at - last.at) * rate : 0);
+        const jumped = Math.abs(time - expected) > SEEK_THRESHOLD_MS;
+        last = { time, at, playing };
+
+        batch(() => {
+          setCurrentTime(time);
+          setIsPlaying(playing);
+          if (jumped) setSeekCount((count) => count + 1);
+        });
+      }, 100);
     }
 
     // prettier-ignore
@@ -78,7 +105,9 @@ export const renderer = createRenderer<
   async start(ctx: RendererContext<SyncedLyricsPluginConfig>) {
     netFetch = ctx.ipc.invoke.bind(ctx.ipc, 'synced-lyrics:fetch');
 
-    setConfig(await ctx.getConfig());
+    const config = await ctx.getConfig();
+    updateEnabledProviders(config.disabledProviders);
+    setConfig(config);
 
     ctx.ipc.on('peard:update-song-info', (info: SongInfo) => {
       fetchLyrics(info);

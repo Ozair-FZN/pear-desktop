@@ -27,14 +27,19 @@ import { LitElementWrapper } from '@/solit';
 import {
   type ProviderName,
   ProviderNames,
-  providerNames,
   ProviderNameSchema,
   type ProviderState,
 } from '../../providers';
 import { _ytAPI } from '../index';
 import { reactiveOwner } from '../reactive-root';
 import { config } from '../renderer';
-import { currentLyrics, lyricsStore, setLyricsStore } from '../store';
+import {
+  currentLyrics,
+  enabledProviders,
+  isProviderEnabled,
+  lyricsStore,
+  setLyricsStore,
+} from '../store';
 
 import type { PlayerAPIEvents } from '@/types/player-api-events';
 
@@ -43,7 +48,7 @@ const LocalStorageSchema = z.object({
 });
 
 export const providerIdx = runWithOwner(reactiveOwner, () =>
-  createMemo(() => providerNames.indexOf(lyricsStore.provider)),
+  createMemo(() => enabledProviders().indexOf(lyricsStore.provider)),
 )!;
 
 const shouldSwitchProvider = (providerData: ProviderState) => {
@@ -66,14 +71,15 @@ const providerBias = (p: ProviderName) =>
 
 const pickBestProvider = () => {
   const preferred = config()?.preferredProvider;
-  if (preferred) {
+  if (preferred && isProviderEnabled(preferred)) {
     const data = lyricsStore.lyrics[preferred].data;
     if (Array.isArray(data?.lines) || data?.lyrics) {
       return { provider: preferred, force: true };
     }
   }
 
-  const providers = Array.from(providerNames);
+  const providers = Array.from(enabledProviders());
+  if (!providers.length) return null;
   providers.sort((a, b) => providerBias(b) - providerBias(a));
 
   return { provider: providers[0], force: false };
@@ -104,7 +110,7 @@ export const LyricsPicker = (props: {
     }
 
     const parseResult = LocalStorageSchema.safeParse(JSON.parse(value));
-    if (parseResult.success) {
+    if (parseResult.success && isProviderEnabled(parseResult.data.provider)) {
       setLyricsStore('provider', parseResult.data.provider);
       setStarredProvider(parseResult.data.provider);
     } else {
@@ -148,45 +154,48 @@ export const LyricsPicker = (props: {
   }
 
   createEffect(() => {
-    if (!hasManuallySwitchedProvider()) {
+    const enabled = enabledProviders();
+    const currentDisabled = !enabled.includes(lyricsStore.provider);
+
+    if (!hasManuallySwitchedProvider() || currentDisabled) {
       const starred = starredProvider();
-      if (starred !== null) {
+      if (starred !== null && enabled.includes(starred)) {
         setLyricsStore('provider', starred);
         return;
       }
 
-      const allProvidersFailed = providerNames.every((p) =>
+      const allProvidersFailed = enabled.every((p) =>
         shouldSwitchProvider(lyricsStore.lyrics[p]),
       );
-      if (allProvidersFailed) return;
+      if (allProvidersFailed && !currentDisabled) return;
 
-      const { provider, force } = pickBestProvider();
+      const best = pickBestProvider();
+      if (!best) return;
+
       if (
-        force ||
-        providerBias(lyricsStore.provider) < providerBias(provider)
+        best.force ||
+        currentDisabled ||
+        providerBias(lyricsStore.provider) < providerBias(best.provider)
       ) {
-        setLyricsStore('provider', provider);
+        setLyricsStore('provider', best.provider);
       }
     }
   });
 
-  const next = () => {
+  const step = (direction: 1 | -1) => {
+    const enabled = enabledProviders();
+    if (!enabled.length) return;
+
     setHasManuallySwitchedProvider(true);
     setLyricsStore('provider', (prevProvider) => {
-      const idx = providerNames.indexOf(prevProvider);
-      return providerNames[(idx + 1) % providerNames.length];
+      const idx = enabled.indexOf(prevProvider);
+      if (idx === -1) return enabled[0];
+      return enabled[(idx + direction + enabled.length) % enabled.length];
     });
   };
 
-  const previous = () => {
-    setHasManuallySwitchedProvider(true);
-    setLyricsStore('provider', (prevProvider) => {
-      const idx = providerNames.indexOf(prevProvider);
-      return providerNames[
-        (idx + providerNames.length - 1) % providerNames.length
-      ];
-    });
-  };
+  const next = () => step(1);
+  const previous = () => step(-1);
 
   return (
     <div class="lyrics-picker" ref={props.setStickRef}>
@@ -205,7 +214,7 @@ export const LyricsPicker = (props: {
 
       <div class="lyrics-picker-content">
         <div class="lyrics-picker-content-label">
-          <Index each={providerNames}>
+          <Index each={enabledProviders()}>
             {(provider) => (
               <div
                 class="lyrics-picker-item"
@@ -279,11 +288,13 @@ export const LyricsPicker = (props: {
         </div>
 
         <ul class="lyrics-picker-content-dots">
-          <For each={providerNames}>
+          <For each={enabledProviders()}>
             {(_, idx) => (
               <li
                 class="lyrics-picker-dot"
-                onClick={() => setLyricsStore('provider', providerNames[idx()])}
+                onClick={() =>
+                  setLyricsStore('provider', enabledProviders()[idx()])
+                }
                 style={{
                   background: idx() === providerIdx() ? 'white' : 'black',
                 }}
