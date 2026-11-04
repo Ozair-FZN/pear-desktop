@@ -566,6 +566,7 @@
           }
         },
         "download-playlist": "Download playlist",
+        "download-lyrics": "Download lyrics",
         "presets": "Presets",
         "skip-existing": "Skip existing files"
       },

@@ -1,25 +1,55 @@
-import { batch } from 'solid-js';
+import { batch, createEffect, runWithOwner } from 'solid-js';
 
+import { getSongInfo } from '@/providers/song-info-front';
 import { createRenderer } from '@/utils';
 import { waitForElement } from '@/utils/wait-for-element';
 
-import { disposeReactiveRoot } from './reactive-root';
+import { disposeReactiveRoot, reactiveOwner } from './reactive-root';
 import {
   setConfig,
   setCurrentTime,
   setIsPlaying,
   setSeekCount,
 } from './renderer';
-import { fetchLyrics, updateEnabledProviders } from './store';
+import { currentLyrics, fetchLyrics, updateEnabledProviders } from './store';
 import { selectors, tabStates } from './utils';
 
-import type { SyncedLyricsPluginConfig } from '../types';
+import type { LyricResult, SyncedLyricsPluginConfig } from '../types';
 import type { SongInfo } from '@/providers/song-info';
 import type { RendererContext } from '@/types/contexts';
 import type { MusicPlayer } from '@/types/music-player';
 
 const PLAYER_STATE_PLAYING = 1;
 const SEEK_THRESHOLD_MS = 500;
+
+const formatLrcTime = (ms: number) => {
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.floor((ms % 60_000) / 1000);
+  const centiseconds = Math.floor((ms % 1000) / 10);
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${pad(minutes)}:${pad(seconds)}.${pad(centiseconds)}`;
+};
+
+/** Converts lyrics into the file contents saved alongside downloads. */
+const toLyricsFile = (
+  data: LyricResult,
+): { extension: 'lrc' | 'txt'; content: string } | null => {
+  const lines = data.lines?.filter(
+    (line, idx) => !(idx === 0 && line.timeInMs === 0 && !line.text.trim()),
+  );
+  if (lines?.length) {
+    return {
+      extension: 'lrc',
+      content: lines
+        .map((line) => `[${formatLrcTime(line.timeInMs)}]${line.text}`)
+        .join('\n'),
+    };
+  }
+  if (data.lyrics?.trim()) {
+    return { extension: 'txt', content: data.lyrics };
+  }
+  return null;
+};
 
 export let _ytAPI: MusicPlayer | null = null;
 export let netFetch: (
@@ -111,6 +141,19 @@ export const renderer = createRenderer<
 
     ctx.ipc.on('peard:update-song-info', (info: SongInfo) => {
       fetchLyrics(info);
+    });
+
+    // Share the lyrics shown for the current song, so the downloader can
+    // save them next to the downloaded file.
+    runWithOwner(reactiveOwner, () => {
+      createEffect(() => {
+        const data = currentLyrics()?.data;
+        const videoId = getSongInfo()?.videoId;
+        if (!data || !videoId) return;
+
+        const file = toLyricsFile(data);
+        if (file) ctx.ipc.send('synced-lyrics:lyrics', { videoId, ...file });
+      });
     });
   },
 

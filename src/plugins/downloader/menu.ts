@@ -212,5 +212,13 @@ export const onMenu = async ({
         setConfig({ skipExisting: item.checked });
       },
     },
+    {
+      label: t('plugins.downloader.menu.download-lyrics'),
+      type: 'checkbox',
+      checked: config.downloadLyrics,
+      click(item) {
+        setConfig({ downloadLyrics: item.checked });
+      },
+    },
   ];
 };

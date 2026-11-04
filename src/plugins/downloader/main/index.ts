@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 
 import { Mutex } from 'async-mutex';
 import { BG, type BgConfig } from 'bgutils-js';
@@ -219,6 +219,9 @@ export const onMainLoad = async ({
   });
   ipc.handle('download-playlist-request', async (url: string) =>
     downloadPlaylist(url),
+  );
+  ipc.on('synced-lyrics:lyrics', (lyrics: SavedLyrics) =>
+    onLyricsReceived(lyrics),
   );
 
   downloadSongOnFinishSetup({ ipc, getConfig });
@@ -479,12 +482,66 @@ async function downloadSongUnsafe(
     writeFileSync(filePath, fileBuffer);
   }
 
+  if (config.downloadLyrics) {
+    saveLyrics(filePath, metadata);
+  }
+
   sendFeedback(null, -1);
   console.info(
     t('plugins.downloader.backend.feedback.done', {
       filePath,
     }),
   );
+}
+
+export type SavedLyrics = {
+  videoId: string;
+  /** `lrc` when the lyrics are synced, `txt` for plain lyrics. */
+  extension: 'lrc' | 'txt';
+  content: string;
+};
+
+const MAX_CACHED_LYRICS = 50;
+/** Lyrics already fetched by the synced-lyrics plugin, by videoId. */
+const lyricsCache = new Map<string, SavedLyrics>();
+/** Downloaded songs whose lyrics haven't been received yet, by videoId. */
+const awaitingLyrics = new Map<string, string>();
+
+const writeLyricsFile = (audioFilePath: string, lyrics: SavedLyrics) => {
+  try {
+    const { dir, name } = parse(audioFilePath);
+    writeFileSync(join(dir, `${name}.${lyrics.extension}`), lyrics.content);
+  } catch (error) {
+    // Lyrics should never fail the song download itself
+    console.error('Failed to save lyrics:', error);
+  }
+};
+
+const onLyricsReceived = (lyrics: SavedLyrics) => {
+  lyricsCache.delete(lyrics.videoId);
+  lyricsCache.set(lyrics.videoId, lyrics);
+  if (lyricsCache.size > MAX_CACHED_LYRICS) {
+    lyricsCache.delete(lyricsCache.keys().next().value!);
+  }
+
+  // The song finished downloading before its lyrics were fetched
+  const audioFilePath = awaitingLyrics.get(lyrics.videoId);
+  if (audioFilePath) {
+    awaitingLyrics.delete(lyrics.videoId);
+    writeLyricsFile(audioFilePath, lyrics);
+  }
+};
+
+function saveLyrics(audioFilePath: string, metadata: CustomSongInfo) {
+  const lyrics = lyricsCache.get(metadata.videoId);
+  if (lyrics) {
+    writeLyricsFile(audioFilePath, lyrics);
+  } else {
+    awaitingLyrics.set(metadata.videoId, audioFilePath);
+    if (awaitingLyrics.size > MAX_CACHED_LYRICS) {
+      awaitingLyrics.delete(awaitingLyrics.keys().next().value!);
+    }
+  }
 }
 
 async function downloadChunks(
